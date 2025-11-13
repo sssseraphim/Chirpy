@@ -1,57 +1,61 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/sssseraphim/Chirpy/internal/database"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
+	platform       string
+	secret         string
+	polkaKey       string
 }
 
 func main() {
-	const filepathRoot = "."
-	const port = "8080"
+	godotenv.Load(".env")
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("failed to connect to db: %v", err)
+	}
 	var cfg apiConfig
+	cfg.platform = os.Getenv("PLATFORM")
+	cfg.secret = os.Getenv("SECRET")
+	cfg.polkaKey = os.Getenv("POLKA_KEY")
+
+	cfg.dbQueries = database.New(db)
+	const filepathRoot = "."
+	const port = ":8080"
 	mux := http.NewServeMux()
 	mux.Handle("/app/", cfg.middlewareMetricInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("GET /admin/metrics", cfg.showHits)
-	mux.HandleFunc("POST /admin/reset", cfg.resetHits)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
-	server := &http.Server{Handler: mux, Addr: ":8080"}
-	server.ListenAndServe()
-}
+	mux.HandleFunc("POST /admin/reset", cfg.resetUsers)
+	mux.HandleFunc("POST /api/users", cfg.handleUsers)
+	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.handleListChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleChirpById)
+	mux.HandleFunc("POST /api/login", cfg.handleLogin)
+	mux.HandleFunc("POST /api/refresh", cfg.handleRefresh)
+	mux.HandleFunc("POST /api/revoke", cfg.handleRevoke)
+	mux.HandleFunc("PUT /api/users", cfg.handleChangeEmailAndPassword)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handleDeleteChirp)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.handleWebhooks)
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-	}
-	w.Header().Set("Content-Type", "application/json")
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		respondWithError(w, 400, "something went wrong")
-		return
-	}
-	if len(params.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
-		return
-	}
-	type ans struct {
-		Body string `json:"cleaned_body"`
-	}
-	data, err := json.Marshal(ans{Body: cleanBody(params.Body)})
-	if err != nil {
-		fmt.Printf("Something went wrong")
-	}
-	resopondWithJson(w, 200, data)
-	w.Write(data)
+	server := &http.Server{Handler: mux, Addr: port}
+	err = server.ListenAndServe()
+	fmt.Println(err)
 }
 
 func cleanBody(s string) string {
@@ -112,7 +116,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	w.Write(dat)
 }
 
-func resopondWithJson(w http.ResponseWriter, code int, payload interface{}) {
+func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	w.Header().Add("Content-Type", "application/json")
 	w.WriteHeader(code)
 	dat, err := json.Marshal(payload)
