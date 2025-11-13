@@ -59,7 +59,7 @@ func main() {
 }
 
 func cleanBody(s string) string {
-	bad := map[string]bool{"nigga": true, "fuck": true, "gay": true}
+	bad := map[string]bool{}
 	words := strings.Split(s, " ")
 	for i := range len(words) {
 		if bad[strings.ToLower(words[i])] {
